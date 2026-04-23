@@ -37,6 +37,8 @@ let hostTicksPerSecond = receiverMachTicksPerSecond()
 let pcmFrameSamples = 480
 let pcmBytesPerFrame = pcmFrameSamples * MemoryLayout<Int16>.size
 let playbackQueue = DispatchQueue(label: "com.syncwave.playback", qos: .userInitiated)
+let targetPrebufferPackets = 3
+let silencePayload = Data(count: pcmBytesPerFrame)
 
 let player = AudioPlayer()
 do {
@@ -51,8 +53,67 @@ var estimatedJitterSec: Double = 0
 var lostPacketCount: UInt64 = 0
 var reorderedPacketCount: UInt64 = 0
 var duplicatePacketCount: UInt64 = 0
+var streamSSRC: UInt32?
+var concealmentFrameCount: UInt64 = 0
+
+var jitterBuffer: [UInt16: Data] = [:]
+var expectedPlayoutSequence: UInt16?
+var lastGoodPayload: Data?
+
+let playbackTimer = DispatchSource.makeTimerSource(queue: playbackQueue)
+playbackTimer.schedule(deadline: .now() + .milliseconds(20), repeating: .milliseconds(10), leeway: .milliseconds(2))
+playbackTimer.setEventHandler {
+    if expectedPlayoutSequence == nil {
+        guard jitterBuffer.count >= targetPrebufferPackets else { return }
+        expectedPlayoutSequence = jitterBuffer.keys.min()
+    }
+
+    guard let seq = expectedPlayoutSequence else { return }
+
+    let payloadToPlay: Data
+    if let payload = jitterBuffer.removeValue(forKey: seq) {
+        payloadToPlay = payload
+        lastGoodPayload = payload
+    } else {
+        // Simple concealment for bootstrap mode: repeat last frame if available, else silence.
+        concealmentFrameCount += 1
+        payloadToPlay = lastGoodPayload ?? silencePayload
+    }
+
+    if let buffer = makeStereoBufferFromMonoPCM16(payloadToPlay) {
+        player.play(buffer: buffer)
+    }
+    expectedPlayoutSequence = seq &+ 1
+
+    if jitterBuffer.count > 500, let oldest = jitterBuffer.keys.min() {
+        jitterBuffer.removeValue(forKey: oldest)
+    }
+}
+playbackTimer.resume()
 
 receiver.onPacket = { packet in
+    if streamSSRC != packet.ssrc {
+        if streamSSRC != nil {
+            print("[Receiver] stream changed, resetting stats. oldSSRC=\(streamSSRC!) newSSRC=\(packet.ssrc)")
+        }
+        streamSSRC = packet.ssrc
+        receivedPacketCount = 0
+        windowPacketCount = 0
+        windowStart = Date()
+        lastSequenceNumber = nil
+        lastReceivedAtTicks = nil
+        estimatedJitterSec = 0
+        lostPacketCount = 0
+        reorderedPacketCount = 0
+        duplicatePacketCount = 0
+        concealmentFrameCount = 0
+        playbackQueue.async {
+            jitterBuffer.removeAll(keepingCapacity: true)
+            expectedPlayoutSequence = nil
+            lastGoodPayload = nil
+        }
+    }
+
     receivedPacketCount += 1
     windowPacketCount += 1
 
@@ -77,9 +138,9 @@ receiver.onPacket = { packet in
     }
     lastReceivedAtTicks = packet.receivedAt
 
-    if packet.payload.count == pcmBytesPerFrame, let buffer = makeStereoBufferFromMonoPCM16(packet.payload) {
+    if packet.payload.count == pcmBytesPerFrame {
         playbackQueue.async {
-            player.play(buffer: buffer)
+            jitterBuffer[packet.sequenceNumber] = packet.payload
         }
     }
 
@@ -89,7 +150,7 @@ receiver.onPacket = { packet in
         let instantRate = windowElapsed > 0 ? Double(windowPacketCount) / windowElapsed : 0
         let jitterMs = estimatedJitterSec * 1000.0
         let lossPct = receivedPacketCount > 0 ? (Double(lostPacketCount) / Double(receivedPacketCount + lostPacketCount)) * 100.0 : 0
-        print("[Receiver] packets=\(receivedPacketCount) rate=\(String(format: "%.1f", instantRate))/s seq=\(packet.sequenceNumber) payload=\(packet.payload.count)B loss=\(lostPacketCount) (\(String(format: "%.2f", lossPct))%) reorder=\(reorderedPacketCount) dup=\(duplicatePacketCount) jitter=\(String(format: "%.2f", jitterMs))ms")
+        print("[Receiver] packets=\(receivedPacketCount) rate=\(String(format: "%.1f", instantRate))/s seq=\(packet.sequenceNumber) payload=\(packet.payload.count)B loss=\(lostPacketCount) (\(String(format: "%.2f", lossPct))%) reorder=\(reorderedPacketCount) dup=\(duplicatePacketCount) conceal=\(concealmentFrameCount) jitter=\(String(format: "%.2f", jitterMs))ms")
         windowPacketCount = 0
         windowStart = now
     }
