@@ -9,9 +9,22 @@ import AVFoundation
 import CoreAudio
 
 struct SenderCLIConfig {
+    enum SourceMode: CustomStringConvertible {
+        case tone
+        case tap
+
+        var description: String {
+            switch self {
+            case .tone: return "tone"
+            case .tap: return "tap"
+            }
+        }
+    }
+
     var transport: RTPSender.TransportMode = .multicast
     var host: String = "239.0.0.1"
     var port: UInt16 = 5004
+    var source: SourceMode = .tone
 }
 
 let senderConfig = parseSenderCLIConfig(CommandLine.arguments)
@@ -21,7 +34,8 @@ let senderConfig = parseSenderCLIConfig(CommandLine.arguments)
 print("SyncWave Sender starting...")
 print("Transport: \(senderConfig.transport)")
 print("Target: \(senderConfig.host):\(senderConfig.port)")
-print("Codec: bootstrap PCM16 mono tone, 10ms frames")
+print("Source: \(senderConfig.source)")
+print("Payload: PCM16 mono, 10ms frames")
 
 // Pipeline (to be wired up):
 //
@@ -49,30 +63,71 @@ let toneFrequencyHz: Double = 440.0
 let amplitude: Double = 0.20
 var phase: Double = 0
 let phaseStep = (2.0 * Double.pi * toneFrequencyHz) / sampleRate
+var tapKeeper: AudioTap?
 
-// Temporary bootstrap path:
-// Until AudioTap + Opus are implemented, send a PCM16 mono tone at 10ms cadence.
-// This validates transport + playback end-to-end without RTP payload fragmentation.
-Timer.scheduledTimer(withTimeInterval: 0.010, repeats: true) { _ in
-    var payload = Data(count: frameSamples * MemoryLayout<Int16>.size)
-    payload.withUnsafeMutableBytes { rawBuffer in
-        let samples = rawBuffer.bindMemory(to: Int16.self)
-        guard let baseAddress = samples.baseAddress else { return }
-        for i in 0..<frameSamples {
-            let sampleValue = sin(phase) * amplitude
-            let pcm = Int16(max(-1.0, min(1.0, sampleValue)) * Double(Int16.max))
-            baseAddress[i] = pcm.littleEndian
-            phase += phaseStep
-            if phase >= 2.0 * Double.pi {
-                phase -= 2.0 * Double.pi
+switch senderConfig.source {
+case .tone:
+    // Bootstrap mode used for transport/playback validation.
+    Timer.scheduledTimer(withTimeInterval: 0.010, repeats: true) { _ in
+        var payload = Data(count: frameSamples * MemoryLayout<Int16>.size)
+        payload.withUnsafeMutableBytes { rawBuffer in
+            let samples = rawBuffer.bindMemory(to: Int16.self)
+            guard let baseAddress = samples.baseAddress else { return }
+            for i in 0..<frameSamples {
+                let sampleValue = sin(phase) * amplitude
+                let pcm = Int16(max(-1.0, min(1.0, sampleValue)) * Double(Int16.max))
+                baseAddress[i] = pcm.littleEndian
+                phase += phaseStep
+                if phase >= 2.0 * Double.pi {
+                    phase -= 2.0 * Double.pi
+                }
+            }
+        }
+        sender.send(payload)
+        sentPacketCount += 1
+        if sentPacketCount.isMultiple(of: 100) {
+            print("[Sender] sent \(sentPacketCount) RTP packets")
+        }
+    }
+case .tap:
+    // Phase 1 integration path: stream captured PCM from AudioTap.
+    let tap = AudioTap()
+    var pendingMonoSamples: [Float] = []
+    tap.onBuffer = { buffer in
+        guard let channelData = buffer.floatChannelData else { return }
+        let channelCount = Int(buffer.format.channelCount)
+        let frameCount = Int(buffer.frameLength)
+        guard channelCount > 0, frameCount > 0 else { return }
+
+        for frameIndex in 0..<frameCount {
+            var mixed: Float = 0
+            for channel in 0..<channelCount {
+                mixed += channelData[channel][frameIndex]
+            }
+            pendingMonoSamples.append(mixed / Float(channelCount))
+        }
+
+        while pendingMonoSamples.count >= frameSamples {
+            var payload = Data(count: frameSamples * MemoryLayout<Int16>.size)
+            payload.withUnsafeMutableBytes { rawBuffer in
+                let outSamples = rawBuffer.bindMemory(to: Int16.self)
+                guard let outBase = outSamples.baseAddress else { return }
+                for i in 0..<frameSamples {
+                    let clamped = max(-1.0, min(1.0, pendingMonoSamples[i]))
+                    outBase[i] = Int16(clamped * Float(Int16.max)).littleEndian
+                }
+            }
+            pendingMonoSamples.removeFirst(frameSamples)
+            sender.send(payload)
+            sentPacketCount += 1
+            if sentPacketCount.isMultiple(of: 100) {
+                print("[Sender] sent \(sentPacketCount) RTP packets")
             }
         }
     }
-    sender.send(payload)
-    sentPacketCount += 1
-    if sentPacketCount.isMultiple(of: 100) {
-        print("[Sender] sent \(sentPacketCount) RTP packets")
-    }
+    tap.start()
+    print("[Sender] tap mode active (interim: default input device capture)")
+    tapKeeper = tap
 }
 
 // Keep the process alive
@@ -117,6 +172,15 @@ private func parseSenderCLIConfig(_ args: [String]) -> SenderCLIConfig {
             } else {
                 print("[Sender] Invalid --port value: \(args[idx + 1])")
             }
+            idx += 2
+        case "--source":
+            guard idx + 1 < args.count else {
+                print("[Sender] Missing value for --source")
+                idx += 1
+                continue
+            }
+            let value = args[idx + 1].lowercased()
+            config.source = value == "tap" ? .tap : .tone
             idx += 2
         default:
             idx += 1

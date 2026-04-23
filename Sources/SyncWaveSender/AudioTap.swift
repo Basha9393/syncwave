@@ -58,15 +58,68 @@ class AudioTap {
     // use it as a reference for the exact property IDs and setup sequence.
 
     private var engine: AVAudioEngine?
+    private let tapQueue = DispatchQueue(label: "com.syncwave.audio-tap", qos: .userInitiated)
+    private let targetSampleRate: Double = 48_000
 
     func start() {
-        // TODO: implement per notes above
-        print("[AudioTap] start() — not yet implemented. See implementation notes in source.")
+        guard engine == nil else { return }
+
+        let engine = AVAudioEngine()
+        let inputNode = engine.inputNode
+        let inputFormat = inputNode.inputFormat(forBus: 0)
+
+        // Temporary phase-1 implementation:
+        // capture from default input device while CoreAudio process-tap integration is pending.
+        guard let targetFormat = AVAudioFormat(commonFormat: .pcmFormatFloat32,
+                                               sampleRate: targetSampleRate,
+                                               channels: inputFormat.channelCount,
+                                               interleaved: false) else {
+            print("[AudioTap] failed to create target format")
+            return
+        }
+
+        inputNode.installTap(onBus: 0, bufferSize: 1024, format: inputFormat) { [weak self] buffer, _ in
+            guard let self else { return }
+            let converted = self.convert(buffer: buffer, to: targetFormat) ?? buffer
+            self.tapQueue.async {
+                self.onBuffer?(converted)
+            }
+        }
+
+        do {
+            try engine.start()
+            self.engine = engine
+            print("[AudioTap] started (interim input-device mode, 48kHz)")
+        } catch {
+            inputNode.removeTap(onBus: 0)
+            print("[AudioTap] failed to start: \(error.localizedDescription)")
+        }
     }
 
     func stop() {
+        engine?.inputNode.removeTap(onBus: 0)
         engine?.stop()
         engine = nil
         print("[AudioTap] stopped.")
+    }
+
+    private func convert(buffer: AVAudioPCMBuffer, to format: AVAudioFormat) -> AVAudioPCMBuffer? {
+        guard let converter = AVAudioConverter(from: buffer.format, to: format) else { return nil }
+        let ratio = format.sampleRate / buffer.format.sampleRate
+        let capacity = AVAudioFrameCount(Double(buffer.frameLength) * ratio) + 8
+        guard let output = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: capacity) else { return nil }
+
+        var hadInput = false
+        let status = converter.convert(to: output, error: nil) { _, outStatus in
+            if hadInput {
+                outStatus.pointee = .noDataNow
+                return nil
+            }
+            hadInput = true
+            outStatus.pointee = .haveData
+            return buffer
+        }
+        guard status == .haveData || status == .endOfStream else { return nil }
+        return output
     }
 }

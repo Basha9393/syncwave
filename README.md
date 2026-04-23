@@ -90,6 +90,10 @@ cd /Users/sadiqbasha/Documents/syncwave
 ./build/syncwave-sender
 ```
 
+Sender source options:
+- `--source tone` (default, deterministic test tone)
+- `--source tap` (interim real capture path via default input device)
+
 Expected result:
 - Sender logs increasing packet counts.
 - Receiver logs packet count, instantaneous packets/sec (near ~100/s), sequence numbers, and payload size.
