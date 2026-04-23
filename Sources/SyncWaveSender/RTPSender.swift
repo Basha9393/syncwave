@@ -4,7 +4,7 @@
 // STATUS: Skeleton with implementation notes. Phase 3 of ROADMAP.md.
 
 import Foundation
-import Network
+import Darwin
 
 // MARK: - RTP Packet
 
@@ -58,6 +58,7 @@ class RTPSender {
     private var timestamp: UInt32 = 0
     private let ssrc: UInt32 = UInt32.random(in: 0...UInt32.max)
     private let samplesPerFrame: UInt32
+    private var socketFD: Int32 = -1
 
     // MARK: - Implementation notes
     //
@@ -90,11 +91,21 @@ class RTPSender {
         self.multicastGroup = multicastGroup
         self.port = port
         self.samplesPerFrame = UInt32(samplesPerFrame)
-        print("[RTPSender] init — not yet implemented. target=\(multicastGroup):\(port)")
+        do {
+            try setupSocket()
+            print("[RTPSender] ready. target=\(multicastGroup):\(port) ssrc=\(ssrc)")
+        } catch {
+            print("[RTPSender] socket setup failed: \(error)")
+        }
     }
 
     /// Send one Opus frame as an RTP packet.
     func send(_ opusFrame: Data) {
+        guard socketFD >= 0 else {
+            print("[RTPSender] send skipped: socket not available.")
+            return
+        }
+
         let packet = RTPPacket(
             sequenceNumber: sequenceNumber,
             timestamp: timestamp,
@@ -102,10 +113,59 @@ class RTPSender {
             payload: opusFrame
         )
 
-        // TODO: serialize packet.toData() and send via UDP socket
+        let packetData = packet.toData()
+        var destination = sockaddr_in()
+        destination.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
+        destination.sin_family = sa_family_t(AF_INET)
+        destination.sin_port = port.bigEndian
+
+        let addressSetResult = multicastGroup.withCString { ip in
+            inet_pton(AF_INET, ip, &destination.sin_addr)
+        }
+        guard addressSetResult == 1 else {
+            print("[RTPSender] invalid multicast address: \(multicastGroup)")
+            return
+        }
+
+        let bytesSent = packetData.withUnsafeBytes { rawBytes in
+            guard let baseAddress = rawBytes.baseAddress else { return -1 }
+            return withUnsafePointer(to: &destination) { ptr -> ssize_t in
+                ptr.withMemoryRebound(to: sockaddr.self, capacity: 1) { sockaddrPtr in
+                    sendto(socketFD, baseAddress, packetData.count, 0, sockaddrPtr, socklen_t(MemoryLayout<sockaddr_in>.size))
+                }
+            }
+        }
+        if bytesSent < 0 {
+            print("[RTPSender] sendto failed: \(String(cString: strerror(errno)))")
+        }
 
         sequenceNumber &+= 1              // wraps at 65535
         timestamp &+= samplesPerFrame     // advance by one frame's worth of samples
+    }
+
+    deinit {
+        if socketFD >= 0 {
+            close(socketFD)
+            socketFD = -1
+        }
+    }
+
+    private func setupSocket() throws {
+        let fd = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP)
+        guard fd >= 0 else {
+            throw RTPSenderError.socketCreateFailed(String(cString: strerror(errno)))
+        }
+
+        var ttl: UInt8 = 1
+        let ttlResult = withUnsafePointer(to: &ttl) { ptr in
+            setsockopt(fd, IPPROTO_IP, IP_MULTICAST_TTL, ptr, socklen_t(MemoryLayout<UInt8>.size))
+        }
+        guard ttlResult == 0 else {
+            close(fd)
+            throw RTPSenderError.socketOptionFailed("IP_MULTICAST_TTL", String(cString: strerror(errno)))
+        }
+
+        socketFD = fd
     }
 }
 
@@ -121,5 +181,19 @@ private extension UInt32 {
     var bigEndianBytes: [UInt8] {
         [UInt8(self >> 24), UInt8((self >> 16) & 0xFF),
          UInt8((self >> 8) & 0xFF), UInt8(self & 0xFF)]
+    }
+}
+
+private enum RTPSenderError: LocalizedError {
+    case socketCreateFailed(String)
+    case socketOptionFailed(String, String)
+
+    var errorDescription: String? {
+        switch self {
+        case let .socketCreateFailed(reason):
+            return "Failed to create UDP socket: \(reason)"
+        case let .socketOptionFailed(option, reason):
+            return "Failed setting socket option \(option): \(reason)"
+        }
     }
 }

@@ -51,6 +51,49 @@ Opus Encoder  ──► RTP/UDP Multicast ────────────�
 - Xcode 15+
 - `libopus` (via Homebrew: `brew install opus`)
 
+## Quick Start (Current Networking Smoke Test)
+
+This project currently includes a working RTP multicast transport slice with synthetic payloads. It validates sender/receiver networking before audio capture + Opus are wired end-to-end.
+
+1. Build both binaries:
+
+```bash
+cd /Users/sadiqbasha/Documents/syncwave
+mkdir -p build
+
+swiftc \
+  Sources/SyncWaveSender/main.swift \
+  Sources/SyncWaveSender/RTPSender.swift \
+  Sources/SyncWaveSender/AudioTap.swift \
+  Sources/SyncWaveSender/OpusEncoder.swift \
+  -o build/syncwave-sender
+
+swiftc \
+  Sources/SyncWaveReceiver/main.swift \
+  Sources/SyncWaveReceiver/RTPReceiver.swift \
+  Sources/SyncWaveReceiver/AudioPlayer.swift \
+  Sources/SyncWaveReceiver/OpusDecoder.swift \
+  -o build/syncwave-receiver
+```
+
+2. Run receiver (terminal 1):
+
+```bash
+cd /Users/sadiqbasha/Documents/syncwave
+./build/syncwave-receiver
+```
+
+3. Run sender (terminal 2):
+
+```bash
+cd /Users/sadiqbasha/Documents/syncwave
+./build/syncwave-sender
+```
+
+Expected result:
+- Sender logs increasing packet counts.
+- Receiver logs packet count, instantaneous packets/sec (near ~100/s), sequence numbers, and payload size.
+
 ## Project Structure
 
 ```

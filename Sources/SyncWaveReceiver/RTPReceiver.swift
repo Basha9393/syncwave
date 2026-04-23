@@ -4,6 +4,7 @@
 // STATUS: Skeleton with implementation notes. Phase 4 of ROADMAP.md.
 
 import Foundation
+import Darwin
 
 // MARK: - Parsed RTP Packet
 
@@ -25,6 +26,11 @@ class RTPReceiver {
 
     /// Called on a background thread for each received packet.
     var onPacket: ((IncomingRTPPacket) -> Void)?
+    var onError: ((String) -> Void)?
+
+    private var socketFD: Int32 = -1
+    private var isRunning = false
+    private let receiveQueue = DispatchQueue(label: "com.syncwave.rtp-receiver", qos: .userInitiated)
 
     // MARK: - Implementation notes
     //
@@ -66,12 +72,25 @@ class RTPReceiver {
     }
 
     func start() {
-        // TODO: implement per notes above
-        print("[RTPReceiver] start() — not yet implemented.")
+        guard !isRunning else { return }
+        do {
+            try setupSocket()
+            isRunning = true
+            receiveQueue.async { [weak self] in
+                self?.receiveLoop()
+            }
+            print("[RTPReceiver] listening on \(multicastGroup):\(port)")
+        } catch {
+            onError?("[RTPReceiver] failed to start: \(error.localizedDescription)")
+        }
     }
 
     func stop() {
-        // TODO: close socket, stop receive loop
+        isRunning = false
+        if socketFD >= 0 {
+            close(socketFD)
+            socketFD = -1
+        }
         print("[RTPReceiver] stopped.")
     }
 
@@ -92,5 +111,106 @@ class RTPReceiver {
             payload: payload,
             receivedAt: mach_absolute_time()
         )
+    }
+
+    private func setupSocket() throws {
+        let fd = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP)
+        guard fd >= 0 else {
+            throw RTPReceiverError.socketCreateFailed(String(cString: strerror(errno)))
+        }
+
+        var reuse: Int32 = 1
+        let reuseAddrResult = withUnsafePointer(to: &reuse) { ptr in
+            setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, ptr, socklen_t(MemoryLayout<Int32>.size))
+        }
+        guard reuseAddrResult == 0 else {
+            close(fd)
+            throw RTPReceiverError.socketOptionFailed("SO_REUSEADDR", String(cString: strerror(errno)))
+        }
+
+        #if os(macOS)
+        let reusePortResult = withUnsafePointer(to: &reuse) { ptr in
+            setsockopt(fd, SOL_SOCKET, SO_REUSEPORT, ptr, socklen_t(MemoryLayout<Int32>.size))
+        }
+        guard reusePortResult == 0 else {
+            close(fd)
+            throw RTPReceiverError.socketOptionFailed("SO_REUSEPORT", String(cString: strerror(errno)))
+        }
+        #endif
+
+        var bindAddress = sockaddr_in()
+        bindAddress.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
+        bindAddress.sin_family = sa_family_t(AF_INET)
+        bindAddress.sin_port = port.bigEndian
+        bindAddress.sin_addr = in_addr(s_addr: INADDR_ANY.bigEndian)
+
+        let bindResult = withUnsafePointer(to: &bindAddress) { ptr -> Int32 in
+            ptr.withMemoryRebound(to: sockaddr.self, capacity: 1) { sockaddrPtr in
+                bind(fd, sockaddrPtr, socklen_t(MemoryLayout<sockaddr_in>.size))
+            }
+        }
+        guard bindResult == 0 else {
+            close(fd)
+            throw RTPReceiverError.bindFailed(String(cString: strerror(errno)))
+        }
+
+        var membership = ip_mreq()
+        let groupAddressResult = multicastGroup.withCString { ip in
+            inet_pton(AF_INET, ip, &membership.imr_multiaddr)
+        }
+        guard groupAddressResult == 1 else {
+            close(fd)
+            throw RTPReceiverError.invalidAddress(multicastGroup)
+        }
+        membership.imr_interface = in_addr(s_addr: INADDR_ANY)
+
+        let addMembershipResult = withUnsafePointer(to: &membership) { ptr in
+            setsockopt(fd, IPPROTO_IP, IP_ADD_MEMBERSHIP, ptr, socklen_t(MemoryLayout<ip_mreq>.size))
+        }
+        guard addMembershipResult == 0 else {
+            close(fd)
+            throw RTPReceiverError.socketOptionFailed("IP_ADD_MEMBERSHIP", String(cString: strerror(errno)))
+        }
+
+        socketFD = fd
+    }
+
+    private func receiveLoop() {
+        var buffer = [UInt8](repeating: 0, count: 65_535)
+
+        while isRunning {
+            let receivedCount = recv(socketFD, &buffer, buffer.count, 0)
+            if receivedCount <= 0 {
+                if isRunning {
+                    onError?("[RTPReceiver] recv failed: \(String(cString: strerror(errno)))")
+                }
+                break
+            }
+
+            guard receivedCount > 12 else { continue }
+            let packetData = Data(buffer[0..<Int(receivedCount)])
+            guard let packet = parseRTP(packetData) else { continue }
+            onPacket?(packet)
+        }
+    }
+}
+
+private enum RTPReceiverError: LocalizedError {
+    case socketCreateFailed(String)
+    case socketOptionFailed(String, String)
+    case bindFailed(String)
+    case invalidAddress(String)
+
+    var errorDescription: String? {
+        switch self {
+        case let .socketCreateFailed(reason):
+            return "Failed to create UDP socket: \(reason)"
+        case let .socketOptionFailed(option, reason):
+            return "Failed setting socket option \(option): \(reason)"
+        case let .bindFailed(reason):
+            return "Failed to bind receiver socket: \(reason)"
+        case let .invalidAddress(address):
+            return "Invalid multicast address: \(address)"
+        }
     }
 }
