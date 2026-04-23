@@ -94,6 +94,17 @@ Expected result:
 - Sender logs increasing packet counts.
 - Receiver logs packet count, instantaneous packets/sec (near ~100/s), sequence numbers, and payload size.
 
+### Optional: Unicast A/B Test
+
+If your Wi-Fi handles multicast poorly, run a direct unicast test:
+
+- Receiver: `./build/syncwave-receiver --transport unicast --host 0.0.0.0 --port 5004`
+- Sender: `./build/syncwave-sender --transport unicast --host <receiver-ip> --port 5004`
+
+The sender and receiver also accept multicast overrides:
+
+- `--transport multicast --host 239.0.0.1 --port 5004`
+
 ## Project Structure
 
 ```

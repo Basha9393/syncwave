@@ -50,9 +50,14 @@ struct RTPPacket {
 /// will receive every packet exactly once, regardless of how many
 /// receivers there are (the network handles fan-out).
 class RTPSender {
+    enum TransportMode {
+        case multicast
+        case unicast
+    }
 
-    let multicastGroup: String  // e.g. "239.0.0.1"
+    let targetHost: String      // e.g. "239.0.0.1" or "192.168.1.10"
     let port: UInt16            // e.g. 5004
+    let transportMode: TransportMode
 
     private var sequenceNumber: UInt16 = 0
     private var timestamp: UInt32 = 0
@@ -87,13 +92,14 @@ class RTPSender {
     // Alternatively use NWConnection with NWEndpoint.hostPort — higher level but
     // multicast support is less direct. POSIX sockets are more straightforward here.
 
-    init(multicastGroup: String = "239.0.0.1", port: UInt16 = 5004, samplesPerFrame: Int = 480) {
-        self.multicastGroup = multicastGroup
+    init(targetHost: String = "239.0.0.1", port: UInt16 = 5004, samplesPerFrame: Int = 480, transportMode: TransportMode = .multicast) {
+        self.targetHost = targetHost
         self.port = port
         self.samplesPerFrame = UInt32(samplesPerFrame)
+        self.transportMode = transportMode
         do {
             try setupSocket()
-            print("[RTPSender] ready. target=\(multicastGroup):\(port) ssrc=\(ssrc)")
+            print("[RTPSender] ready. mode=\(transportMode) target=\(targetHost):\(port) ssrc=\(ssrc)")
         } catch {
             print("[RTPSender] socket setup failed: \(error)")
         }
@@ -119,11 +125,11 @@ class RTPSender {
         destination.sin_family = sa_family_t(AF_INET)
         destination.sin_port = port.bigEndian
 
-        let addressSetResult = multicastGroup.withCString { ip in
+        let addressSetResult = targetHost.withCString { ip in
             inet_pton(AF_INET, ip, &destination.sin_addr)
         }
         guard addressSetResult == 1 else {
-            print("[RTPSender] invalid multicast address: \(multicastGroup)")
+            print("[RTPSender] invalid target host address: \(targetHost)")
             return
         }
 
@@ -156,13 +162,15 @@ class RTPSender {
             throw RTPSenderError.socketCreateFailed(String(cString: strerror(errno)))
         }
 
-        var ttl: UInt8 = 1
-        let ttlResult = withUnsafePointer(to: &ttl) { ptr in
-            setsockopt(fd, IPPROTO_IP, IP_MULTICAST_TTL, ptr, socklen_t(MemoryLayout<UInt8>.size))
-        }
-        guard ttlResult == 0 else {
-            close(fd)
-            throw RTPSenderError.socketOptionFailed("IP_MULTICAST_TTL", String(cString: strerror(errno)))
+        if transportMode == .multicast {
+            var ttl: UInt8 = 1
+            let ttlResult = withUnsafePointer(to: &ttl) { ptr in
+                setsockopt(fd, IPPROTO_IP, IP_MULTICAST_TTL, ptr, socklen_t(MemoryLayout<UInt8>.size))
+            }
+            guard ttlResult == 0 else {
+                close(fd)
+                throw RTPSenderError.socketOptionFailed("IP_MULTICAST_TTL", String(cString: strerror(errno)))
+            }
         }
 
         socketFD = fd

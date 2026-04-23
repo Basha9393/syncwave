@@ -20,9 +20,14 @@ struct IncomingRTPPacket {
 
 /// Joins a UDP multicast group and delivers parsed RTP packets to a callback.
 class RTPReceiver {
+    enum TransportMode {
+        case multicast
+        case unicast
+    }
 
-    let multicastGroup: String
+    let listenAddress: String
     let port: UInt16
+    let transportMode: TransportMode
 
     /// Called on a background thread for each received packet.
     var onPacket: ((IncomingRTPPacket) -> Void)?
@@ -66,9 +71,10 @@ class RTPReceiver {
     //       }
     //   }
 
-    init(multicastGroup: String = "239.0.0.1", port: UInt16 = 5004) {
-        self.multicastGroup = multicastGroup
+    init(listenAddress: String = "239.0.0.1", port: UInt16 = 5004, transportMode: TransportMode = .multicast) {
+        self.listenAddress = listenAddress
         self.port = port
+        self.transportMode = transportMode
     }
 
     func start() {
@@ -79,7 +85,7 @@ class RTPReceiver {
             receiveQueue.async { [weak self] in
                 self?.receiveLoop()
             }
-            print("[RTPReceiver] listening on \(multicastGroup):\(port)")
+            print("[RTPReceiver] listening mode=\(transportMode) on \(listenAddress):\(port)")
         } catch {
             onError?("[RTPReceiver] failed to start: \(error.localizedDescription)")
         }
@@ -154,22 +160,24 @@ class RTPReceiver {
             throw RTPReceiverError.bindFailed(String(cString: strerror(errno)))
         }
 
-        var membership = ip_mreq()
-        let groupAddressResult = multicastGroup.withCString { ip in
-            inet_pton(AF_INET, ip, &membership.imr_multiaddr)
-        }
-        guard groupAddressResult == 1 else {
-            close(fd)
-            throw RTPReceiverError.invalidAddress(multicastGroup)
-        }
-        membership.imr_interface = in_addr(s_addr: INADDR_ANY)
+        if transportMode == .multicast {
+            var membership = ip_mreq()
+            let groupAddressResult = listenAddress.withCString { ip in
+                inet_pton(AF_INET, ip, &membership.imr_multiaddr)
+            }
+            guard groupAddressResult == 1 else {
+                close(fd)
+                throw RTPReceiverError.invalidAddress(listenAddress)
+            }
+            membership.imr_interface = in_addr(s_addr: INADDR_ANY)
 
-        let addMembershipResult = withUnsafePointer(to: &membership) { ptr in
-            setsockopt(fd, IPPROTO_IP, IP_ADD_MEMBERSHIP, ptr, socklen_t(MemoryLayout<ip_mreq>.size))
-        }
-        guard addMembershipResult == 0 else {
-            close(fd)
-            throw RTPReceiverError.socketOptionFailed("IP_ADD_MEMBERSHIP", String(cString: strerror(errno)))
+            let addMembershipResult = withUnsafePointer(to: &membership) { ptr in
+                setsockopt(fd, IPPROTO_IP, IP_ADD_MEMBERSHIP, ptr, socklen_t(MemoryLayout<ip_mreq>.size))
+            }
+            guard addMembershipResult == 0 else {
+                close(fd)
+                throw RTPReceiverError.socketOptionFailed("IP_ADD_MEMBERSHIP", String(cString: strerror(errno)))
+            }
         }
 
         socketFD = fd

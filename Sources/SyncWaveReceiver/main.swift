@@ -7,8 +7,17 @@
 import Foundation
 import AVFoundation
 
+struct ReceiverCLIConfig {
+    var transport: RTPReceiver.TransportMode = .multicast
+    var host: String = "239.0.0.1"
+    var port: UInt16 = 5004
+}
+
+let receiverConfig = parseReceiverCLIConfig(CommandLine.arguments)
+
 print("SyncWave Receiver starting...")
-print("Listening on multicast: 239.0.0.1:5004")
+print("Transport: \(receiverConfig.transport)")
+print("Listening target: \(receiverConfig.host):\(receiverConfig.port)")
 print("Jitter buffer: 20ms")
 print("Playback mode: bootstrap PCM16 mono tone -> stereo output")
 
@@ -28,7 +37,7 @@ print("Playback mode: bootstrap PCM16 mono tone -> stereo output")
 //     ▼
 //   System speakers
 
-let receiver = RTPReceiver(multicastGroup: "239.0.0.1", port: 5004)
+let receiver = RTPReceiver(listenAddress: receiverConfig.host, port: receiverConfig.port, transportMode: receiverConfig.transport)
 var receivedPacketCount: UInt64 = 0
 var windowPacketCount: UInt64 = 0
 var windowStart = Date()
@@ -196,4 +205,51 @@ private func makeStereoBufferFromMonoPCM16(_ payload: Data) -> AVAudioPCMBuffer?
         }
     }
     return buffer
+}
+
+private func parseReceiverCLIConfig(_ args: [String]) -> ReceiverCLIConfig {
+    var config = ReceiverCLIConfig()
+    var idx = 1
+    while idx < args.count {
+        switch args[idx] {
+        case "--transport":
+            guard idx + 1 < args.count else {
+                print("[Receiver] Missing value for --transport")
+                idx += 1
+                continue
+            }
+            let value = args[idx + 1].lowercased()
+            if value == "unicast" {
+                config.transport = .unicast
+                config.host = "0.0.0.0"
+            } else {
+                config.transport = .multicast
+                config.host = "239.0.0.1"
+            }
+            idx += 2
+        case "--host":
+            guard idx + 1 < args.count else {
+                print("[Receiver] Missing value for --host")
+                idx += 1
+                continue
+            }
+            config.host = args[idx + 1]
+            idx += 2
+        case "--port":
+            guard idx + 1 < args.count else {
+                print("[Receiver] Missing value for --port")
+                idx += 1
+                continue
+            }
+            if let port = UInt16(args[idx + 1]) {
+                config.port = port
+            } else {
+                print("[Receiver] Invalid --port value: \(args[idx + 1])")
+            }
+            idx += 2
+        default:
+            idx += 1
+        }
+    }
+    return config
 }

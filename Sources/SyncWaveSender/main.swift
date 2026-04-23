@@ -8,10 +8,19 @@ import Foundation
 import AVFoundation
 import CoreAudio
 
+struct SenderCLIConfig {
+    var transport: RTPSender.TransportMode = .multicast
+    var host: String = "239.0.0.1"
+    var port: UInt16 = 5004
+}
+
+let senderConfig = parseSenderCLIConfig(CommandLine.arguments)
+
 // MARK: - Entry point
 
 print("SyncWave Sender starting...")
-print("Multicast group: 239.0.0.1:5004")
+print("Transport: \(senderConfig.transport)")
+print("Target: \(senderConfig.host):\(senderConfig.port)")
 print("Codec: bootstrap PCM16 mono tone, 10ms frames")
 
 // Pipeline (to be wired up):
@@ -27,7 +36,12 @@ print("Codec: bootstrap PCM16 mono tone, 10ms frames")
 //     ▼
 //   UDP multicast socket → LAN
 
-let sender = RTPSender(multicastGroup: "239.0.0.1", port: 5004, samplesPerFrame: 480)
+let sender = RTPSender(
+    targetHost: senderConfig.host,
+    port: senderConfig.port,
+    samplesPerFrame: 480,
+    transportMode: senderConfig.transport
+)
 var sentPacketCount: UInt64 = 0
 let sampleRate: Double = 48_000
 let frameSamples = 480
@@ -63,3 +77,50 @@ Timer.scheduledTimer(withTimeInterval: 0.010, repeats: true) { _ in
 
 // Keep the process alive
 RunLoop.main.run()
+
+private func parseSenderCLIConfig(_ args: [String]) -> SenderCLIConfig {
+    var config = SenderCLIConfig()
+    var idx = 1
+    while idx < args.count {
+        switch args[idx] {
+        case "--transport":
+            guard idx + 1 < args.count else {
+                print("[Sender] Missing value for --transport")
+                idx += 1
+                continue
+            }
+            let value = args[idx + 1].lowercased()
+            if value == "unicast" {
+                config.transport = .unicast
+                config.host = "127.0.0.1"
+            } else {
+                config.transport = .multicast
+                config.host = "239.0.0.1"
+            }
+            idx += 2
+        case "--host":
+            guard idx + 1 < args.count else {
+                print("[Sender] Missing value for --host")
+                idx += 1
+                continue
+            }
+            config.host = args[idx + 1]
+            idx += 2
+        case "--port":
+            guard idx + 1 < args.count else {
+                print("[Sender] Missing value for --port")
+                idx += 1
+                continue
+            }
+            if let port = UInt16(args[idx + 1]) {
+                config.port = port
+            } else {
+                print("[Sender] Invalid --port value: \(args[idx + 1])")
+            }
+            idx += 2
+        default:
+            idx += 1
+        }
+    }
+    return config
+}
