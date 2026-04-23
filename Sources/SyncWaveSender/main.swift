@@ -12,7 +12,7 @@ import CoreAudio
 
 print("SyncWave Sender starting...")
 print("Multicast group: 239.0.0.1:5004")
-print("Codec: Opus 48kHz stereo, 10ms frames")
+print("Codec: bootstrap PCM16 mono tone, 10ms frames")
 
 // Pipeline (to be wired up):
 //
@@ -29,16 +29,29 @@ print("Codec: Opus 48kHz stereo, 10ms frames")
 
 let sender = RTPSender(multicastGroup: "239.0.0.1", port: 5004, samplesPerFrame: 480)
 var sentPacketCount: UInt64 = 0
+let sampleRate: Double = 48_000
+let frameSamples = 480
+let toneFrequencyHz: Double = 440.0
+let amplitude: Double = 0.20
+var phase: Double = 0
+let phaseStep = (2.0 * Double.pi * toneFrequencyHz) / sampleRate
 
 // Temporary bootstrap path:
-// Until AudioTap + Opus are implemented, send synthetic frames at 10ms cadence so
-// transport can be validated independently.
+// Until AudioTap + Opus are implemented, send a PCM16 mono tone at 10ms cadence.
+// This validates transport + playback end-to-end without RTP payload fragmentation.
 Timer.scheduledTimer(withTimeInterval: 0.010, repeats: true) { _ in
-    var payload = Data(count: 160)
+    var payload = Data(count: frameSamples * MemoryLayout<Int16>.size)
     payload.withUnsafeMutableBytes { rawBuffer in
-        guard let bytes = rawBuffer.bindMemory(to: UInt8.self).baseAddress else { return }
-        for i in 0..<160 {
-            bytes[i] = UInt8((Int(sentPacketCount) + i) % 256)
+        let samples = rawBuffer.bindMemory(to: Int16.self)
+        guard let baseAddress = samples.baseAddress else { return }
+        for i in 0..<frameSamples {
+            let sampleValue = sin(phase) * amplitude
+            let pcm = Int16(max(-1.0, min(1.0, sampleValue)) * Double(Int16.max))
+            baseAddress[i] = pcm.littleEndian
+            phase += phaseStep
+            if phase >= 2.0 * Double.pi {
+                phase -= 2.0 * Double.pi
+            }
         }
     }
     sender.send(payload)
