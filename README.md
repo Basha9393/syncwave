@@ -109,6 +109,35 @@ The sender and receiver also accept multicast overrides:
 
 - `--transport multicast --host 239.0.0.1 --port 5004`
 
+## Desktop App (Role Picker)
+
+The codebase now includes a SwiftUI desktop app scaffold under `App/` that supports:
+- selecting `Sender` or `Receiver`
+- choosing transport (`unicast` / `multicast`)
+- selecting source mode (`tone` / `tap`) for sender
+- start/stop control
+- status metrics and discovered sender list
+- persisted role/network/source settings
+
+Current note:
+- You can run the desktop app directly with the provided build script.
+- If you prefer Xcode workflows, you can also add these files to a macOS app target.
+- CLI binaries remain supported for direct testing.
+
+Quick run without creating an Xcode project:
+
+```bash
+cd /Users/sadiqbasha/Documents/syncwave
+./scripts/build-desktop-app.sh
+./build/SyncWaveDesktopApp
+```
+
+Usage in app:
+- Choose `Sender` on one Mac and `Receiver` on the other.
+- Prefer `Unicast` for stable home/Wi-Fi testing.
+- On sender, set host to receiver IP and click `Start`.
+- On receiver, click `Start`, or select discovered sender from the list and click `Use`.
+
 ## Project Structure
 
 ```
