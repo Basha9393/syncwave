@@ -2,7 +2,7 @@
 // Plays decoded PCM audio on the system output using AVAudioEngine.
 // Supports scheduled playback at precise timestamps for sync.
 //
-// STATUS: Skeleton with implementation notes. Phase 4 (basic) + Phase 5 (sync).
+// Phase 4 (immediate playback) and Phase 5 (NTP sync) implementation.
 
 import Foundation
 import AVFoundation
@@ -18,6 +18,7 @@ class AudioPlayer {
     private let engine = AVAudioEngine()
     private let playerNode = AVAudioPlayerNode()
     private var audioFormat: AVAudioFormat?
+    private let machTicksPerSecond = machTicksPerSecondValue()
 
     // MARK: - Setup
 
@@ -57,24 +58,15 @@ class AudioPlayer {
     ///   - ntpTime: The wall-clock time (in seconds since 1970) when this buffer should start playing
     func play(buffer: AVAudioPCMBuffer, atNTPTime ntpTime: TimeInterval) {
         // Convert NTP wall time → AVAudioTime (host time)
-        //
-        // AVAudioTime uses mach_absolute_time() internally.
-        // We need to map "seconds since 1970" to "mach ticks".
-        //
-        // Steps:
-        //   let now_ntp = Date().timeIntervalSince1970
-        //   let now_host = mach_absolute_time()
-        //   let delta_ntp = ntpTime - now_ntp        // how far in the future is play time?
-        //   let delta_host = delta_ntp * machTicksPerSecond
-        //   let play_host = now_host + UInt64(delta_host)
-        //   let avTime = AVAudioTime(hostTime: play_host)
-        //
-        // If delta_ntp is negative (packet arrived late), drop the buffer.
-        // If delta_ntp > jitter buffer max (e.g. > 100ms), something is wrong — log and drop.
+        let nowNTP = Date().timeIntervalSince1970
+        let nowHost = mach_absolute_time()
 
-        // TODO Phase 5: implement time conversion
-        // For now, fall back to immediate playback
-        play(buffer: buffer)
+        let deltaNTP = ntpTime - nowNTP          // How far in the future is play time?
+        let deltaHost = Int64(deltaNTP * machTicksPerSecond)
+        let playHost = UInt64(bitPattern: Int64(bitPattern: nowHost) + deltaHost)
+
+        let avTime = AVAudioTime(hostTime: playHost)
+        playerNode.scheduleBuffer(buffer, at: avTime, completionHandler: nil)
     }
 
     // MARK: - Teardown
@@ -89,7 +81,7 @@ class AudioPlayer {
 
 /// Convert seconds to mach_absolute_time ticks.
 /// Call once at startup and cache the result.
-func machTicksPerSecond() -> Double {
+func machTicksPerSecondValue() -> Double {
     var info = mach_timebase_info_data_t()
     mach_timebase_info(&info)
     // mach_absolute_time is in nanoseconds * (numer/denom)

@@ -1,0 +1,66 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleDevelopmentRegion</key>
+    <string>en</string>
+    <key>CFBundleExecutable</key>
+    <string>$(EXECUTABLE_NAME)</string>
+    <key>CFBundleIdentifier</key>
+    <string>com.syncwave.app</string>
+    <key>CFBundleInfoDictionaryVersion</key>
+    <string>6.0</string>
+    <key>CFBundleName</key>
+    <string>SyncWave</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    <key>CFBundleShortVersionString</key>
+    <string>1.0</string>
+    <key>CFBundleVersion</key>
+    <string>1</string>
+    <key>LSMinimumSystemVersion</key>
+    <string>13.0</string>
+    <key>NSPrincipalClass</key>
+    <string>NSApplication</string>
+
+    <!-- Audio Capture Permissions -->
+    <key>NSAudioCaptureUsageDescription</key>
+    <string>SyncWave needs access to your microphone to capture system audio and stream it to other devices.</string>
+
+    <!-- Microphone Permissions -->
+    <key>NSMicrophoneUsageDescription</key>
+    <string>SyncWave captures your system audio (Spotify, YouTube, etc.) to stream to other devices.</string>
+
+    <!-- Network Permissions -->
+    <key>NSBonjourServices</key>
+    <array>
+        <string>_syncwave-send._tcp</string>
+        <string>_syncwave-recv._tcp</string>
+    </array>
+
+    <!-- Local Network Permission (macOS 12.3+) -->
+    <key>NSLocalNetworkUsageDescription</key>
+    <string>SyncWave uses local network to discover and communicate with other devices on your WiFi.</string>
+
+    <!-- Multicast Network Permission -->
+    <key>NSMulticastUsageDescription</key>
+    <string>SyncWave uses multicast to stream audio efficiently to multiple devices simultaneously.</string>
+
+    <!-- Allow arbitrary loads for local network -->
+    <key>NSAppTransportSecurity</key>
+    <dict>
+        <key>NSAllowsArbitraryLoads</key>
+        <true/>
+        <key>NSExceptionDomains</key>
+        <dict>
+            <key>localhost</key>
+            <dict>
+                <key>NSIncludesSubdomains</key>
+                <true/>
+                <key>NSTemporaryExceptionAllowsInsecureHTTPLoads</key>
+                <true/>
+            </dict>
+        </dict>
+    </dict>
+</dict>
+</plist>

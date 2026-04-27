@@ -56,6 +56,9 @@ let sender = RTPSender(
     samplesPerFrame: 480,
     transportMode: senderConfig.transport
 )
+
+let opusEncoder = OpusEncoder(sampleRate: 48000, channels: 1, frameDuration: .ms10, bitrate: 128_000)
+
 var sentPacketCount: UInt64 = 0
 let sampleRate: Double = 48_000
 let frameSamples = 480
@@ -68,27 +71,31 @@ var tapKeeper: AudioTap?
 switch senderConfig.source {
 case .tone:
     // Bootstrap mode used for transport/playback validation.
+    // Generates a 440Hz sine wave, encodes to Opus, and streams it.
     Timer.scheduledTimer(withTimeInterval: 0.010, repeats: true) { _ in
-        var payload = Data(count: frameSamples * MemoryLayout<Int16>.size)
-        payload.withUnsafeMutableBytes { rawBuffer in
-            let samples = rawBuffer.bindMemory(to: Int16.self)
-            guard let baseAddress = samples.baseAddress else { return }
-            for i in 0..<frameSamples {
-                let sampleValue = sin(phase) * amplitude
-                let pcm = Int16(max(-1.0, min(1.0, sampleValue)) * Double(Int16.max))
-                baseAddress[i] = pcm.littleEndian
-                phase += phaseStep
-                if phase >= 2.0 * Double.pi {
-                    phase -= 2.0 * Double.pi
-                }
+        // Generate Float32 PCM samples
+        var pcmSamples = [Float](repeating: 0, count: frameSamples)
+        for i in 0..<frameSamples {
+            let sampleValue = sin(phase) * amplitude
+            pcmSamples[i] = Float(max(-1.0, min(1.0, sampleValue)))
+            phase += phaseStep
+            if phase >= 2.0 * Double.pi {
+                phase -= 2.0 * Double.pi
             }
         }
-        sender.send(payload)
-        sentPacketCount += 1
-        if sentPacketCount.isMultiple(of: 100) {
-            print("[Sender] sent \(sentPacketCount) RTP packets")
+
+        // Encode to Opus
+        if let opusFrame = opusEncoder.encode(pcmSamples) {
+            sender.send(opusFrame)
+            sentPacketCount += 1
+            if sentPacketCount.isMultiple(of: 100) {
+                print("[Sender] sent \(sentPacketCount) Opus RTP packets")
+            }
+        } else {
+            print("[Sender] Opus encoding failed")
         }
     }
+
 case .tap:
     // Phase 1 integration path: stream captured PCM from AudioTap.
     let tap = AudioTap()
@@ -108,25 +115,21 @@ case .tap:
         }
 
         while pendingMonoSamples.count >= frameSamples {
-            var payload = Data(count: frameSamples * MemoryLayout<Int16>.size)
-            payload.withUnsafeMutableBytes { rawBuffer in
-                let outSamples = rawBuffer.bindMemory(to: Int16.self)
-                guard let outBase = outSamples.baseAddress else { return }
-                for i in 0..<frameSamples {
-                    let clamped = max(-1.0, min(1.0, pendingMonoSamples[i]))
-                    outBase[i] = Int16(clamped * Float(Int16.max)).littleEndian
+            let frameSamples = Array(pendingMonoSamples.prefix(frameSamples))
+            pendingMonoSamples.removeFirst(frameSamples.count)
+
+            // Encode to Opus
+            if let opusFrame = opusEncoder.encode(frameSamples) {
+                sender.send(opusFrame)
+                sentPacketCount += 1
+                if sentPacketCount.isMultiple(of: 100) {
+                    print("[Sender] sent \(sentPacketCount) Opus RTP packets (from tap)")
                 }
-            }
-            pendingMonoSamples.removeFirst(frameSamples)
-            sender.send(payload)
-            sentPacketCount += 1
-            if sentPacketCount.isMultiple(of: 100) {
-                print("[Sender] sent \(sentPacketCount) RTP packets")
             }
         }
     }
     tap.start()
-    print("[Sender] tap mode active (interim: default input device capture)")
+    print("[Sender] tap mode active (capturing system audio)")
     tapKeeper = tap
 }
 

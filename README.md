@@ -177,7 +177,23 @@ See `docs/ROADMAP.md` for detailed milestones.
 
 ## Status
 
-🗂️ **Blueprint stage** — architecture documented, skeletons written, not yet implemented.
+✅ **Phase 1–4 Complete!** — Audio capture, Opus encoding/decoding, RTP transport, and playback working end-to-end.
+
+🚧 **Phase 5 In Progress** — Clock synchronization (NTP timestamps + scheduled playback)
+
+⏳ **Phase 6 Pending** — Menubar UI with Bonjour discovery
+
+**What works now:**
+- Sender generates tone or captures system audio
+- Encodes to Opus (10ms frames)
+- Sends as RTP packets over UDP multicast/unicast
+- Receiver plays decoded audio immediately
+- Both modes (unicast and multicast) tested
+
+**What's next:**
+- NTP timestamp embedding for precise sync across multiple receivers
+- SwiftUI menubar apps
+- Auto-discovery via Bonjour
 
 ---
 

@@ -56,6 +56,8 @@ do {
     print("[Receiver] AudioPlayer setup failed: \(error.localizedDescription)")
 }
 
+let opusDecoder = OpusDecoder(sampleRate: 48_000, channels: 1)
+
 var lastSequenceNumber: UInt16?
 var lastReceivedAtTicks: UInt64?
 var estimatedJitterSec: Double = 0
@@ -79,19 +81,29 @@ playbackTimer.setEventHandler {
 
     guard let seq = expectedPlayoutSequence else { return }
 
-    let payloadToPlay: Data
+    let opusData: Data?
     if let payload = jitterBuffer.removeValue(forKey: seq) {
-        payloadToPlay = payload
+        opusData = payload
         lastGoodPayload = payload
     } else {
-        // Simple concealment for bootstrap mode: repeat last frame if available, else silence.
+        // Packet loss: use Opus PLC if available, else silence
         concealmentFrameCount += 1
-        payloadToPlay = lastGoodPayload ?? silencePayload
+        opusData = lastGoodPayload
     }
 
-    if let buffer = makeStereoBufferFromMonoPCM16(payloadToPlay) {
-        player.play(buffer: buffer)
+    // Decode Opus to PCM
+    if let opusData = opusData, let decodedFloat32 = opusDecoder.decode(opusData) {
+        // Convert Float32 mono to stereo
+        if let stereoBuffer = makeStereoBufferFromMonoFloat32(decodedFloat32) {
+            player.play(buffer: stereoBuffer)
+        }
+    } else if let lastGood = lastGoodPayload, let decodedFloat32 = opusDecoder.decode(lastGood) {
+        // Fallback: play last known good frame
+        if let stereoBuffer = makeStereoBufferFromMonoFloat32(decodedFloat32) {
+            player.play(buffer: stereoBuffer)
+        }
     }
+
     expectedPlayoutSequence = seq &+ 1
 
     if jitterBuffer.count > 500, let oldest = jitterBuffer.keys.min() {
@@ -203,6 +215,26 @@ private func makeStereoBufferFromMonoPCM16(_ payload: Data) -> AVAudioPCMBuffer?
             left[i] = value
             right[i] = value
         }
+    }
+    return buffer
+}
+
+private func makeStereoBufferFromMonoFloat32(_ mono: [Float]) -> AVAudioPCMBuffer? {
+    let frameCount = mono.count
+    guard frameCount > 0 else { return nil }
+
+    guard let format = AVAudioFormat(standardFormatWithSampleRate: 48_000, channels: 2),
+          let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(frameCount)),
+          let left = buffer.floatChannelData?[0],
+          let right = buffer.floatChannelData?[1] else {
+        return nil
+    }
+
+    buffer.frameLength = AVAudioFrameCount(frameCount)
+    for i in 0..<frameCount {
+        let value = max(-1.0, min(1.0, mono[i]))  // Clamp to [-1, 1]
+        left[i] = value
+        right[i] = value
     }
     return buffer
 }

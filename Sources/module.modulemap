@@ -1,0 +1,5 @@
+module Opus {
+    header "BridgingHeader.h"
+    link "opus"
+    export *
+}

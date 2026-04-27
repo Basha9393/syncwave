@@ -1,8 +1,7 @@
 // OpusDecoder.swift
 // Decodes Opus frames back to PCM Float32 audio.
 //
-// STATUS: Skeleton with implementation notes. Phase 4 of ROADMAP.md.
-// Mirrors OpusEncoder.swift on the sender side.
+// Phase 4 of ROADMAP.md.
 
 import Foundation
 
@@ -13,61 +12,90 @@ class OpusDecoder {
 
     let sampleRate: Int
     let channels: Int
-
-    // MARK: - Implementation notes
-    //
-    // With a bridging header that imports <opus/opus.h>:
-    //
-    //   var error: Int32 = 0
-    //   let decoder = opus_decoder_create(Int32(sampleRate), Int32(channels), &error)
-    //   guard error == OPUS_OK else { fatalError("Opus decoder init failed: \(error)") }
-    //
-    // Decoding:
-    //   let maxSamplesPerFrame = 5760  // max Opus frame at 48kHz
-    //   let outputBuffer = UnsafeMutablePointer<Float>.allocate(capacity: maxSamplesPerFrame * channels)
-    //
-    //   opusData.withUnsafeBytes { ptr in
-    //       let samplesDecoded = opus_decode_float(
-    //           decoder,
-    //           ptr.bindMemory(to: UInt8.self).baseAddress,
-    //           Int32(opusData.count),
-    //           outputBuffer,
-    //           Int32(maxSamplesPerFrame),
-    //           0  // 0 = no FEC (forward error correction)
-    //       )
-    //       // samplesDecoded is samples per channel
-    //       // Total floats = samplesDecoded * channels
-    //   }
-    //
-    // Packet loss handling:
-    //   If a packet is dropped, call opus_decode_float with NULL input — Opus will
-    //   use its built-in packet loss concealment (PLC) to generate a plausible substitute.
-    //   This sounds much better than silence.
+    private var decoder: OpaquePointer?
+    private let maxSamplesPerFrame = 5760  // Max Opus frame at 48kHz
 
     init(sampleRate: Int = 48000, channels: Int = 2) {
         self.sampleRate = sampleRate
         self.channels = channels
-        print("[OpusDecoder] init — not yet implemented.")
+
+        // Create decoder
+        var error: Int32 = 0
+        let dec = opus_decoder_create(Int32(sampleRate), Int32(channels), &error)
+
+        guard error == OPUS_OK, let dec = dec else {
+            print("[OpusDecoder] init failed: error code \(error)")
+            return
+        }
+
+        self.decoder = dec
+        print("[OpusDecoder] initialized. sampleRate=\(sampleRate)Hz channels=\(channels)")
     }
 
     /// Decode an Opus frame to Float32 PCM samples.
     /// - Parameter opusFrame: Encoded Opus data from the network
     /// - Returns: Interleaved Float32 PCM samples (L, R, L, R...), or nil on error
     func decode(_ opusFrame: Data) -> [Float]? {
-        // TODO: implement per notes above
-        return nil
+        guard let decoder = decoder else {
+            print("[OpusDecoder] decoder not initialized")
+            return nil
+        }
+
+        let outputBuffer = UnsafeMutablePointer<Float>.allocate(capacity: maxSamplesPerFrame * channels)
+        defer { outputBuffer.deallocate() }
+
+        let samplesDecoded = opusFrame.withUnsafeBytes { ptr -> Int32 in
+            guard let baseAddress = ptr.baseAddress else { return -1 }
+            let uint8Ptr = baseAddress.assumingMemoryBound(to: UInt8.self)
+            return opus_decode_float(
+                decoder,
+                uint8Ptr,
+                Int32(opusFrame.count),
+                outputBuffer,
+                Int32(maxSamplesPerFrame),
+                0  // 0 = no FEC (forward error correction)
+            )
+        }
+
+        guard samplesDecoded > 0 else {
+            print("[OpusDecoder] decode failed: \(samplesDecoded)")
+            return nil
+        }
+
+        // Convert to Swift array
+        let totalSamples = Int(samplesDecoded) * channels
+        let result = Array(UnsafeBufferPointer(start: outputBuffer, count: totalSamples))
+        return result
     }
 
     /// Handle a lost packet using Opus PLC (packet loss concealment).
     /// Call this when a packet doesn't arrive in time.
     /// - Returns: Synthesized audio that blends with surrounding audio
     func concealLostPacket(expectedSampleCount: Int) -> [Float]? {
-        // TODO: call opus_decode_float with NULL input
-        // Returns zeros for now (silence) — PLC sounds much better
-        return [Float](repeating: 0, count: expectedSampleCount * channels)
+        guard let decoder = decoder else { return nil }
+
+        let outputBuffer = UnsafeMutablePointer<Float>.allocate(capacity: expectedSampleCount * channels)
+        defer { outputBuffer.deallocate() }
+
+        // Pass NULL pointer to opus_decode_float to trigger PLC
+        let samplesGenerated = opus_decode_float(
+            decoder,
+            nil,
+            0,
+            outputBuffer,
+            Int32(expectedSampleCount),
+            0
+        )
+
+        guard samplesGenerated > 0 else { return nil }
+
+        let totalSamples = Int(samplesGenerated) * channels
+        return Array(UnsafeBufferPointer(start: outputBuffer, count: totalSamples))
     }
 
     deinit {
-        // TODO: opus_decoder_destroy(decoder)
+        if let decoder = decoder {
+            opus_decoder_destroy(decoder)
+        }
     }
 }
